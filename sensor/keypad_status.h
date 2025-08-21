@@ -2,289 +2,172 @@
 
 #define NPULSE 40  // Define the number of pulses to be captured
 
-class clsLedProto {
-  public: // Add this line to change the access level to public for the following members
-  enum ClassStatLeds {
-    COOL = 0,
-    AUTO = 1,
-    ROOM5 = 2,
-    RUN = 3,
-    ROOM8 = 4,
-    ROOM7 = 5,
-    ROOM6 = 6,
-    TIMER = 7,
-    FAN_CONT = 8,
-    FAN_HI = 9,
-    FAN_MID = 10,
-    FAN_LOW = 11,
-    ROOM3 = 12,
-    ROOM4 = 13,
-    ROOM2 = 14,
-    HEAT = 15,
-    _3C = 16,
-    _3F = 17,
-    _3G = 18,
-    _3B = 19,
-    _3A = 20,
-    ROOM1 = 21,
-    _3E = 22,
-    _3D = 23,
-    _2B = 24,
-    _2F = 25,
-    _2G = 26,
-    _2E = 27,
-    DP = 28,
-    _2C = 29,
-    _2D = 30,
-    _2A = 31,
-    _1D = 32,
-    INSIDE = 33,
-    _1C = 34,
-    _1B = 35,
-    _1E = 36,
-    _1G = 37,
-    _1F = 38,
-    _1A = 39,
-  };
-
-  unsigned long last_intr_us;  // Timestamp of the last interrupt in microseconds
-  unsigned long last_work;     // Timestamp of the last work in the main loop in microseconds
-  char pulse_vec[NPULSE];      // Temporary storage for the pulse train read during the interrupt
-  volatile unsigned char nlow; // Counter for the number of low pulses read
-  volatile unsigned char nbits; // Counter for the number of bits read to be published to Home Assistant (volatile means can be changed externally)
-  volatile unsigned char dbg_nerr; // Counter for the number of errors (volatile means can be changed externally)
-  volatile bool do_work;       // Flag indicating whether there's work to be done in the main loop
-  bool data_error;             // Flag indicating whether there's been a data error
-  bool newdata;                // Flag indicating whether there's new data to be processed
-  char p[NPULSE];              // Storage for the most recent stable pulse train read from the unit
-
-  //Interrupt Handler
-//  void handleIntr() {
-//    auto nowu = micros();           // Stores the current microsecond count at the time of the interrupt.
-//    unsigned long dtu = nowu - last_intr_us;  // Calculates the time difference in microseconds since the last interrupt.
-//    last_intr_us = nowu;           // Updates the last interrupt timestamp to the current timestamp.
-//    if (dtu > 3500) {
-//      // Do nothing, as this is assumed to be the start of the start bit
-//      data_error = false;  // Reset the data error flag
-//      return;
-//    }
-//    if (dtu >= 2700) {
-//    // Start bit detected, reset bit_count
-//      nlow = 0;
-//    } else {
-//    // Data bit detected
-//    if (nlow >= NPULSE) {
-//      //ESP_LOGD("custom","Too many pulses: %d", nlow);  //Adding this makes unstable - guess shoudln't log in ISR (maybe increment counter rather)
-//      data_error = true;  // Set the data error flag
-//      ++dbg_nerr;  // Increment the error counter
-//      nlow = NPULSE;  // Ensures that nlow does not exceed NPULSE, resetting it to NPULSE if it does.
-//    }
-//    pulse_vec[nlow] = dtu < 800;      // Records a '1' or '0' in the pulse vector based on the time difference being less than 800 microseconds.
-//    ++nlow;       // Increments the nlow counter, indicating a new pulse has been recorded.
-//    do_work = 1;  // Sets the do_work flag to true, indicating that there's work to be done in the main loop.
-//    }
-//  }
-
-  void handleIntr() {
-    auto nowu = micros();
-    unsigned long dtu = nowu - last_intr_us;
-    last_intr_us = nowu;
-    if (dtu > 2000) {
-      nlow = 0;
-      return;
-    }
-    if (nlow >= NPULSE) nlow = NPULSE - 1;
-    pulse_vec[nlow] = dtu < 1000;
-    ++nlow;
-    do_work = 1;
-  }
-
-  char decode_digit(uint8_t hex_value) {
-  //This function takes a hex value representing a digit on the display and returns the corresponding character
-  //Using conventional segment display values, the hex values are as follows:
-    switch (hex_value) {
-      case 0x3F: return '0';
-      case 0x06: return '1';
-      case 0x5B: return '2';
-      case 0x4F: return '3';
-      case 0x66: return '4';
-      case 0x6D: return '5';
-      case 0x7C: return '6';
-      case 0x07: return '7';
-      case 0x7F: return '8';
-      case 0x67: return '9';
-      case 0x73: return 'P';  // 'P' is a special case
-      default: return '?';   // Return '?' for unrecognized hex values
-    }
-  }
-
-  float get_display_value() {
-    uint8_t digit1_bits = (p[_1G] << 6) | (p[_1F] << 5) | (p[_1E] << 4) | (p[_1D] << 3) | (p[_1C] << 2) | (p[_1B] << 1) | p[_1A];
-    uint8_t digit2_bits = (p[_2G] << 6) | (p[_2F] << 5) | (p[_2E] << 4) | (p[_2D] << 3) | (p[_2C] << 2) | (p[_2B] << 1) | p[_2A];
-    uint8_t digit3_bits = (p[_3G] << 6) | (p[_3F] << 5) | (p[_3E] << 4) | (p[_3D] << 3) | (p[_3C] << 2) | (p[_3B] << 1) | p[_3A];
-
-    std::string display_str;
-    display_str += decode_digit(digit1_bits);
-    display_str += decode_digit(digit2_bits);
-    display_str += decode_digit(digit3_bits);
-
-    for (char c : display_str) {
-        if (!isdigit(c) ) return -1.0f;  // return -1 if any character is not a digit
-    }
-    float display_value = std::stof(display_str);  // Convert string to float
-    if (p[DP]) display_value *= 0.1f;              // Apply decimal point if DP bit is set
-    return display_value;
-  }
-
-//  void mloop() {
-//    unsigned long now = micros();  // Get the current microsecond count
-//    if (do_work) {      // If there's work to do (set by handleIntr())
-//      do_work = 0;      // Reset the work flag
-//      last_work = now;  // Update the last work time to now
-//    } else {
-//      unsigned long dt = now - last_work;  // Calculate the time since last work
-//      if (dt > 40000 && nlow) {  // If more than 40000 microseconds have passed and there are pulses recorded
-//        nbits = nlow;            // Set the number of bits to the number of pulses recorded
-//        nlow = 0;                // Reset the pulse counter (BCK added this line)
-//        if (nbits ==  40 && !data_error ) {  // If exactly 40 pulses have been recorded (BCK changed from 42. Sometimes we get 41 bits and this has invalid data)
-//          if(memcmp(p, pulse_vec, sizeof p) != 0) {  // If the pulse data has changed
-//            newdata = true;           // Set the newdata flag for the publish_state() call
-//            //for (int n = 0; n < 45; ++n){       // Loop through each element of the pulse vector
-//            //  if (p[n] != pulse_vec[n]) ESP_LOGD("custom","%d: ", n, pulse_vec[n]);  // Log the changed data
-//            //}
-//            memcpy(p, pulse_vec, sizeof p);  // Copy the new pulse data
-//          }
-//        } else {
-//          ESP_LOGD("custom","Only %d bits received (Or data error)", nbits);  // Log the number of bits received
-//        }
-//        last_work = now;  // Update the last work time to now
-//      }
-//    }
-//  }
-
-  void mloop() {
-    unsigned long now = micros();
-    if (do_work) {      // If there's work to do (set by handleIntr())
-      do_work = 0;      // Reset the work flag
-      last_work = now;  // Update the last work time to now
-    } else {
-      unsigned long dt = now - last_work;
-      if (dt > 50000 && nlow == 40) {
-        if(memcmp(p, pulse_vec, sizeof p) != 0) newdata = true;
-        memcpy(p, pulse_vec, sizeof p);
-      }
-    }
-  }
-};
-
-clsLedProto ledProto;  // Instantiate a clsLedProto object named ledProto
-
-void handleInterrupt() {
-    // Global function to handle interrupts and call the appropriate method on ledProto
-    ledProto.handleIntr();
-}
-
-class KeypadStatus : public Component, public Sensor {
+// ESPHome 2025.8.0+ compatible external component
+class KeypadStatusSensor : public sensor::Sensor, public Component {
   private:
-    TextSensor *bitString   ;
-    Sensor *setpoint_temp    ;
-    Sensor *bitcount        ;
-    BinarySensor *cool      ;
-    BinarySensor *auto_md      ;
-    BinarySensor *run       ;
-    BinarySensor *fan_cont  ;
-    BinarySensor *fan_hi    ;
-    BinarySensor *fan_mid   ;
-    BinarySensor *fan_low   ;
-    BinarySensor *room3     ;
-    BinarySensor *room4     ;
-    BinarySensor *room2     ;
-    BinarySensor *heat      ;
-    BinarySensor *room1     ;
+    // Sensor references
+    sensor::Sensor *setpoint_temp_sensor;
+    text_sensor::TextSensor *bit_string_sensor;
+    sensor::Sensor *bit_count_sensor;
+    binary_sensor::BinarySensor *cool_sensor;
+    binary_sensor::BinarySensor *auto_md_sensor;
+    binary_sensor::BinarySensor *run_sensor;
+    binary_sensor::BinarySensor *fan_cont_sensor;
+    binary_sensor::BinarySensor *fan_hi_sensor;
+    binary_sensor::BinarySensor *fan_mid_sensor;
+    binary_sensor::BinarySensor *fan_low_sensor;
+    binary_sensor::BinarySensor *room3_sensor;
+    binary_sensor::BinarySensor *room4_sensor;
+    binary_sensor::BinarySensor *room2_sensor;
+    binary_sensor::BinarySensor *heat_sensor;
+    binary_sensor::BinarySensor *room1_sensor;
+    
+    // GPIO pin
+    int pin_;
+    
+    // Internal state
+    unsigned long last_intr_us;
+    unsigned long last_work;
+    char pulse_vec[NPULSE];
+    volatile unsigned char nlow;
+    volatile unsigned char nbits;
+    volatile unsigned char dbg_nerr;
+    volatile bool do_work;
+    bool data_error;
+    bool newdata;
+    char p[NPULSE];
 
   public:
-    int adc_pin;
-    float get_setup_priority() const override { return esphome::setup_priority::IO; }
-    KeypadStatus(int adc_pin             ,  //Pin for ADC connection
-               TextSensor *bitString   ,
-               Sensor *setpoint_temp    ,
-               Sensor *bitcount        ,
-               BinarySensor *cool      ,
-               BinarySensor *auto_md ,
-               BinarySensor *run       ,
-               BinarySensor *fan_cont ,
-               BinarySensor *fan_hi    ,
-               BinarySensor *fan_mid   ,
-               BinarySensor *fan_low   ,
-               BinarySensor *room3     ,
-               BinarySensor *room4     ,
-               BinarySensor *room2     ,
-               BinarySensor *heat      ,
-               BinarySensor *room1     )  : adc_pin(adc_pin)
-    {
-      this->bitString    = bitString   ;
-      this->setpoint_temp = setpoint_temp;
-      this->bitcount     = bitcount    ;
-      this->cool         = cool        ;
-      this->auto_md    = auto_md   ;
-      this->run          = run         ;
-      this->fan_cont    = fan_cont   ;
-      this->fan_hi       = fan_hi      ;
-      this->fan_mid      = fan_mid     ;
-      this->fan_low      = fan_low     ;
-      this->room3        = room3       ;
-      this->room4        = room4       ;
-      this->room2        = room2       ;
-      this->heat         = heat        ;
-      this->room1        = room1       ;
+    // Constructor
+    KeypadStatusSensor() : Sensor("keypad_status") {}
+    
+    // Setup method
+    void setup() override {
+      pinMode(pin_, INPUT);
+      attachInterrupt(digitalPinToInterrupt(pin_), [this]() { this->handleIntr(); }, FALLING);
     }
-
-    void setup() override
-    {
-      // Setup code to configure the pin and attach the interrupt
-      //Send adc_pin to log
-      ESP_LOGD("custom","adc_pin: %d", adc_pin);
-//      adc_pin = 32;
-      pinMode(adc_pin, INPUT);
-      attachInterrupt(digitalPinToInterrupt(adc_pin), handleInterrupt, FALLING);
-    }
-
+    
+    // Loop method
     void loop() override {
-      // Main loop for the LedProto Component, processes the pulse train and publishes the state to Home Assistant
-      ledProto.mloop();
-      // Initialize an empty string
-      std::string text;
-
-      if (ledProto.newdata) {  // Publish the text to the TextSensor
-      // Loop through each element of the char array
-        text = "";
+      mloop();
+      
+      if (newdata) {
+        // Update bit string sensor
+        std::string text = "";
         for(int i = 0; i < NPULSE; ++i) {
-          // Append '0' or '1' to the string based on the value of each element
-          text += (ledProto.p[i] ? '1' : '0');
+          text += (p[i] ? '1' : '0');
         }
-        bitString->publish_state(text);
-        ledProto.newdata = false;
-
-      // Publish the display value as a number
-      float display_value = ledProto.get_display_value();
-      setpoint_temp->publish_state(display_value);
-//      bitcount->publish_state(ledProto.nbits);
-      bitcount->publish_state(ledProto.dbg_nerr); //Changed to publish the error count instead of the bit count
-
-      // Publish the status of each LED as a binary sensor (convert to boolean with check for 0)
-      cool->publish_state(ledProto.p[clsLedProto::COOL] != 0);
-      auto_md->publish_state(ledProto.p[clsLedProto::AUTO] != 0);
-      run->publish_state(ledProto.p[clsLedProto::RUN] != 0);
-      fan_cont->publish_state(ledProto.p[clsLedProto::FAN_CONT] != 0);
-      fan_hi->publish_state(ledProto.p[clsLedProto::FAN_HI] != 0);
-      fan_mid->publish_state(ledProto.p[clsLedProto::FAN_MID] != 0);
-      fan_low->publish_state(ledProto.p[clsLedProto::FAN_LOW] != 0);
-      room3->publish_state(ledProto.p[clsLedProto::ROOM3] != 0);
-      room4->publish_state(ledProto.p[clsLedProto::ROOM4] != 0);
-      room2->publish_state(ledProto.p[clsLedProto::ROOM2] != 0);
-      heat->publish_state(ledProto.p[clsLedProto::HEAT] != 0);
-      room1->publish_state(ledProto.p[clsLedProto::ROOM1] != 0);
-
+        if (bit_string_sensor) bit_string_sensor->publish_state(text);
+        
+        // Update temperature sensor
+        float display_value = get_display_value();
+        if (display_value > 0 && setpoint_temp_sensor) {
+          setpoint_temp_sensor->publish_state(display_value);
+        }
+        
+        // Update all binary sensors
+        if (cool_sensor) cool_sensor->publish_state(p[0] != 0);
+        if (auto_md_sensor) auto_md_sensor->publish_state(p[1] != 0);
+        if (run_sensor) run_sensor->publish_state(p[3] != 0);
+        if (fan_cont_sensor) fan_cont_sensor->publish_state(p[8] != 0);
+        if (fan_hi_sensor) fan_hi_sensor->publish_state(p[9] != 0);
+        if (fan_mid_sensor) fan_mid_sensor->publish_state(p[10] != 0);
+        if (fan_low_sensor) fan_low_sensor->publish_state(p[11] != 0);
+        if (room3_sensor) room3_sensor->publish_state(p[12] != 0);
+        if (room4_sensor) room4_sensor->publish_state(p[13] != 0);
+        if (room2_sensor) room2_sensor->publish_state(p[14] != 0);
+        if (heat_sensor) heat_sensor->publish_state(p[15] != 0);
+        if (room1_sensor) room1_sensor->publish_state(p[21] != 0);
+        
+        newdata = false;
       }
+    }
+    
+    // Set pin
+    void set_pin(int pin) { pin_ = pin; }
+    
+    // Set sensor references
+    void set_setpoint_temp_sensor(sensor::Sensor *sensor) { setpoint_temp_sensor = sensor; }
+    void set_bit_string_sensor(text_sensor::TextSensor *sensor) { bit_string_sensor = sensor; }
+    void set_bit_count_sensor(sensor::Sensor *sensor) { bit_count_sensor = sensor; }
+    void set_cool_sensor(binary_sensor::BinarySensor *sensor) { cool_sensor = sensor; }
+    void set_auto_md_sensor(binary_sensor::BinarySensor *sensor) { auto_md_sensor = sensor; }
+    void set_run_sensor(binary_sensor::BinarySensor *sensor) { run_sensor = sensor; }
+    void set_fan_cont_sensor(binary_sensor::BinarySensor *sensor) { fan_cont_sensor = sensor; }
+    void set_fan_hi_sensor(binary_sensor::BinarySensor *sensor) { fan_hi_sensor = sensor; }
+    void set_fan_mid_sensor(binary_sensor::BinarySensor *sensor) { fan_mid_sensor = sensor; }
+    void set_fan_low_sensor(binary_sensor::BinarySensor *sensor) { fan_low_sensor = sensor; }
+    void set_room3_sensor(binary_sensor::BinarySensor *sensor) { room3_sensor = sensor; }
+    void set_room4_sensor(binary_sensor::BinarySensor *sensor) { room4_sensor = sensor; }
+    void set_room2_sensor(binary_sensor::BinarySensor *sensor) { room2_sensor = sensor; }
+    void set_heat_sensor(binary_sensor::BinarySensor *sensor) { heat_sensor = sensor; }
+    void set_room1_sensor(binary_sensor::BinarySensor *sensor) { room1_sensor = sensor; }
+
+  private:
+    // Interrupt handler
+    void handleIntr() {
+      auto nowu = micros();
+      unsigned long dtu = nowu - last_intr_us;
+      last_intr_us = nowu;
+      if (dtu > 2000) {
+        nlow = 0;
+        return;
+      }
+      if (nlow >= NPULSE) nlow = NPULSE - 1;
+      pulse_vec[nlow] = dtu < 1000;
+      ++nlow;
+      do_work = 1;
+    }
+
+    // Main loop processing
+    void mloop() {
+      unsigned long now = micros();
+      if (do_work) {
+        do_work = 0;
+        last_work = now;
+      } else {
+        unsigned long dt = now - last_work;
+        if (dt > 50000 && nlow == 40) {
+          if(memcmp(p, pulse_vec, sizeof p) != 0) newdata = true;
+          memcpy(p, pulse_vec, sizeof p);
+        }
+      }
+    }
+
+    // Decode digit from segment bits
+    char decode_digit(uint8_t hex_value) {
+      switch (hex_value) {
+        case 0x3F: return '0';
+        case 0x06: return '1';
+        case 0x5B: return '2';
+        case 0x4F: return '3';
+        case 0x66: return '4';
+        case 0x6D: return '5';
+        case 0x7C: return '6';
+        case 0x07: return '7';
+        case 0x7F: return '8';
+        case 0x67: return '9';
+        case 0x73: return 'P';
+        default: return '?';
+      }
+    }
+
+    // Get display value from segment bits
+    float get_display_value() {
+      uint8_t digit1_bits = (p[37] << 6) | (p[38] << 5) | (p[36] << 4) | (p[32] << 3) | (p[34] << 2) | (p[35] << 1) | p[39];
+      uint8_t digit2_bits = (p[26] << 6) | (p[25] << 5) | (p[27] << 4) | (p[23] << 3) | (p[29] << 2) | (p[24] << 1) | p[30];
+      uint8_t digit3_bits = (p[18] << 6) | (p[17] << 5) | (p[22] << 4) | (p[19] << 3) | (p[20] << 2) | (p[16] << 1) | p[21];
+
+      std::string display_str;
+      display_str += decode_digit(digit1_bits);
+      display_str += decode_digit(digit2_bits);
+      display_str += decode_digit(digit3_bits);
+
+      for (char c : display_str) {
+        if (!isdigit(c)) return -1.0f;
+      }
+      float display_value = std::stof(display_str);
+      if (p[28]) display_value *= 0.1f; // Apply decimal point
+      return display_value;
     }
 };
