@@ -1,0 +1,4 @@
+---
+external_components:
+  - source: sensor/keypad_status.h
+    components: [ sensor.keypad_status ]
